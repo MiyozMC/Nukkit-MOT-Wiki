@@ -13,7 +13,6 @@ sidebar_position: 8
 :::tip 常用子类
 - **PlayerInventory** 玩家随身物品栏
 - **ChestInventory** 箱子容器库存
-- **EnderChestInventory** 末影箱库存
 :::
 
 ## 获取库存实例 \{#obtaining-inventory}
@@ -24,8 +23,11 @@ sidebar_position: 8
 // 获取玩家物品栏
 PlayerInventory playerInv = player.getInventory();
 
-// 获取打开的箱子库存
-ChestInventory chestInv = (ChestInventory) player.getWindowById(WindowId.CHEST);
+// 获取打开的容器库存（需类型检查）
+Inventory openInv = player.getWindowById(WindowId.CONTAINER);
+if(openInv instanceof ChestInventory) {
+    ChestInventory chestInv = (ChestInventory) openInv;
+}
 ```
 
 ## 主要操作方法 \{#main-operations}
@@ -34,11 +36,11 @@ ChestInventory chestInv = (ChestInventory) player.getWindowById(WindowId.CHEST);
 ```java
 Item diamond = Item.get(Item.DIAMOND);
 
-// 直接给予玩家
+// 直接给予玩家（自动堆叠）
 player.giveItem(diamond);
 
 // 安全添加（返回未放入的物品）
-Item[] leftovers = playerInv.addItem(diamond);
+Item[] leftovers = playerInv.addItem(diamond.clone());  // 必须克隆防止数据污染
 
 // 强制添加到指定槽位
 playerInv.setItem(0, diamond); // 0为热键栏第一个格子
@@ -46,8 +48,8 @@ playerInv.setItem(0, diamond); // 0为热键栏第一个格子
 
 ### 移除物品 \{#remove-items}
 ```java
-// 移除指定数量的物品
-playerInv.removeItem(Item.get(Item.DIAMOND, 0, 5)); // 移除5个钻石
+// 移除指定数量的物品（0为meta通配符）
+playerInv.removeItem(Item.get(Item.DIAMOND, 0, 5)); 
 
 // 清空指定槽位
 playerInv.clear(36); // 移除装备栏头盔位置
@@ -61,8 +63,10 @@ Item mainHand = playerInv.getItemInHand();
 // 检查是否有至少64个圆石
 boolean hasCobble = playerInv.contains(Item.get(Item.COBBLESTONE, 0, 64));
 
-// 获取所有物品
-Item[] contents = playerInv.getContents().values().toArray(new Item[0]);
+// 获取所有物品（排除空物品）
+Item[] contents = playerInv.getContents().values().stream()
+    .filter(item -> !item.isNull())
+    .toArray(Item[]::new);
 ```
 
 ## 槽位系统 \{#slot-system}
@@ -79,10 +83,10 @@ Item[] contents = playerInv.getContents().values().toArray(new Item[0]);
 ```java
 // 给玩家装备钻石胸甲
 Item chestplate = Item.get(Item.DIAMOND_CHESTPLATE);
-playerInv.setItem(38, chestplate); // 38为胸甲槽位
+playerInv.setChestplate(chestplate);  // 使用专用方法
 
 // 获取玩家头盔
-Item helmet = playerInv.getHelmet();
+Item helmet = playerInv.getHelmet();   // 正确的方法名
 ```
 
 ## 库存事件监听 \{#inventory-events}
@@ -92,7 +96,7 @@ Item helmet = playerInv.getHelmet();
 @EventHandler
 public void onInventoryClick(InventoryClickEvent event) {
     Player player = event.getPlayer();
-    Item clicked = event.getSourceItem();
+    Item clicked = event.getItem();  // 正确的API方法
     
     // 取消所有钻石的点击
     if(clicked.getId() == Item.DIAMOND) {
@@ -109,7 +113,7 @@ public void onTransaction(InventoryTransactionEvent event) {
     for(InventoryAction action : event.getTransaction().getActions()) {
         if(action instanceof SlotChangeAction) {
             SlotChangeAction slotAction = (SlotChangeAction) action;
-            // 检测箱子第一格被放入钻石
+            // 检测容器第一格被放入钻石
             if(slotAction.getInventory() instanceof ChestInventory 
                && slotAction.getSlot() == 0 
                && slotAction.getTargetItem().getId() == Item.DIAMOND) {
@@ -124,25 +128,28 @@ public void onTransaction(InventoryTransactionEvent event) {
 
 ### 保存/恢复库存
 ```java
-// 保存全部物品
-Map<Integer, Item> savedItems = new HashMap<>(playerInv.getContents());
+// 保存全部物品（深拷贝）
+Map<Integer, Item> savedItems = new HashMap<>();
+playerInv.getContents().forEach((slot, item) -> 
+    savedItems.put(slot, item.clone()));
 
 // 清空库存
 playerInv.clearAll();
 
-// 恢复库存
-savedItems.forEach((slot, item) -> playerInv.setItem(slot, item));
+// 恢复库存（避免引用传递）
+savedItems.forEach((slot, item) -> 
+    playerInv.setItem(slot, item.clone()));
 ```
 
 ### 自定义库存布局
 ```java
-// 创建虚拟库存
-CustomInventory myInv = new CustomInventory(InventoryType.CHEST.getDefaultTitle());
+// 创建虚拟库存（正确API用法）
+CustomInventory myInv = new CustomInventory(null, 54, "Custom GUI");
 
-// 设置占位符
+// 设置占位符（玻璃板）
 Item border = Item.get(Item.STAINED_GLASS_PANE, 14).setCustomName(" ");
-for(int i : new int[]{0,1,7,8,9,17,18,26,27,35,36,44}){
-    myInv.setItem(i, border);
+for(int slot : new int[]{0,1,7,8,9,17,18,26,27,35,36,44}){
+    myInv.setItem(slot, border.clone());
 }
 
 // 添加功能按钮
@@ -151,43 +158,41 @@ myInv.setItem(22, infoBtn);
 ```
 
 :::warning 重要提醒
-1. 操作非玩家库存时（如箱子），务必先检查 `inventory.getHolder()` 是否有效
-2. 修改库存后可能需要调用 `inventory.sendContents(player)` 同步客户端
-3. 对于容器库存，使用 `InventoryCloseEvent` 来保存数据
+1. 操作非玩家库存时，必须检查 `inventory.getHolder() != null`
+2. 修改容器库存后需调用 `inventory.sendContents(player)` 同步客户端
+3. 使用 `InventoryCloseEvent` 保存容器数据
+4. **永远克隆Item对象** 防止数据意外修改
 :::
 
 ## 实用工具方法 \{#utility-methods}
 
 ### 快速填充方法
 ```java
-// 填充一组圆石到所有空位
-Item cobble = Item.get(Item.COBBLESTONE, 0, 64);
-for(int i=0; i<playerInv.getSize(); i++){
-    if(playerInv.getItem(i).isNull()){
-        playerInv.setItem(i, cobble.clone());
+// 填充圆石到主物品栏（9-35）
+Item cobble = Item.get(Item.COBBLESTONE);
+for(int slot = 9; slot <= 35; slot++) {
+    if(playerInv.getItem(slot).isNull()) {
+        playerInv.setItem(slot, cobble.clone());
     }
 }
-
-// 随机清空库存
-List<Integer> slots = new ArrayList<>(playerInv.getContents().keySet());
-Collections.shuffle(slots);
-slots.subList(0, 5).forEach(slot -> playerInv.clear(slot)); // 随机清空5格
 ```
 
 ## 常见问题处理 \{#troubleshooting}
 
 ### 物品不同步问题
-使用以下方法强制更新：
 ```java
-playerInv.sendContents(player); // 更新整个库存
-playerInv.sendSlot(0, player);  // 更新指定槽位
+// 更新整个库存
+playerInv.sendContents(player); 
+
+// 更新指定槽位（热键栏0）
+playerInv.sendSlot(0, player);  
 ```
 
 ### 处理不可堆叠物品
 ```java
-Item specialItem = Item.get(Item.DIAMOND_SWORD);
-specialItem.setCompoundTag(new CompoundTag().putString("UniqueID", UUID.randomUUID().toString()));
+// 添加唯一标识的武器
+Item sword = Item.get(Item.DIAMOND_SWORD);
+sword.setNamedTag(new CompoundTag().putString("UniqueID", UUID.randomUUID().toString()));
 
-// 添加时会占用不同槽位
-playerInv.addItem(specialItem.clone(), specialItem.clone()); 
+playerInv.addItem(sword.clone()); 
 ```
